@@ -2,7 +2,7 @@
 Simulator Module - Multi-Thread Concurrency Simulation (Safe vs Unsafe)
 Operating Systems Demonstration: Race Conditions vs Mutual Exclusion
 
-This module coordinates concurrent threads attempting to register for workshops.
+Coordinates concurrent threads attempting to register for workshops.
 Worker threads run concurrently, record their outcomes in thread-safe collections,
 and NEVER interact with Streamlit (st.*) functions. All results are aggregated
 and returned after thread.join() completes.
@@ -27,6 +27,7 @@ def _worker_task(
     results_lock: threading.Lock,
     start_barrier: Optional[threading.Barrier] = None,
     stagger_delay: float = 0.0,
+    use_fine_grained: bool = False,
 ) -> None:
     """
     Individual thread worker routine.
@@ -43,7 +44,13 @@ def _worker_task(
         time.sleep(stagger_delay)
 
     # Perform registration attempt
-    result = store.register(user=user, event_id=event_id, use_lock=use_lock, delay=delay)
+    result = store.register(
+        user=user,
+        event_id=event_id,
+        use_lock=use_lock,
+        delay=delay,
+        use_fine_grained=use_fine_grained,
+    )
 
     # Thread-safe result collection
     with results_lock:
@@ -57,6 +64,7 @@ def run_simulation(
     delay: float = 0.3,
     stagger_ms: float = 0.0,
     store: Optional[EventStore] = None,
+    use_fine_grained: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute a concurrent registration simulation with one thread per user.
@@ -68,6 +76,7 @@ def run_simulation(
     - delay: Processing delay inside critical section (seconds)
     - stagger_ms: Milliseconds delay between thread launches (0 for burst)
     - store: Optional EventStore instance to run against; if None, a fresh one is created.
+    - use_fine_grained: If True, uses per-event locks; if False, uses global mutex.
 
     Returns:
     - Comprehensive simulation metrics and per-thread telemetry.
@@ -105,6 +114,7 @@ def run_simulation(
                 results_lock,
                 start_barrier,
                 stagger,
+                use_fine_grained,
             ),
         )
         threads.append(t)
@@ -112,16 +122,15 @@ def run_simulation(
     # Begin timing
     sim_start_time = time.perf_counter()
 
-    # Spawn all threads
     for t in threads:
         t.start()
-
-    # Await completion of all threads
     for t in threads:
         t.join()
 
     sim_end_time = time.perf_counter()
-    total_runtime_ms = round((sim_end_time - sim_start_time) * 1000.0, 2)
+    total_runtime_s = max(0.001, sim_end_time - sim_start_time)
+    total_runtime_ms = round(total_runtime_s * 1000.0, 2)
+    throughput_rps = round(num_threads / total_runtime_s, 1)
 
     # Evaluate final system state and invariants
     final_event_state = store.get_event_summary(event_id)
@@ -132,6 +141,13 @@ def run_simulation(
     confirmed_count = sum(1 for r in results_list if r["status"] == "CONFIRMED")
     full_count = sum(1 for r in results_list if r["status"] == "FULL")
     duplicate_count = sum(1 for r in results_list if r["status"] == "DUPLICATE")
+
+    # Metrics on lock waiting
+    wait_times = [r.get("waited_ms", 0.0) for r in results_list]
+    hold_times = [r.get("held_ms", 0.0) for r in results_list]
+    avg_wait_ms = round(sum(wait_times) / len(wait_times), 2) if wait_times else 0.0
+    max_wait_ms = round(max(wait_times), 2) if wait_times else 0.0
+    avg_held_ms = round(sum(hold_times) / len(hold_times), 2) if hold_times else 0.0
 
     # Overbooking occurs if confirmed count exceeds event capacity or remaining places drops below 0
     overbooked = (confirmed_count > capacity) or (final_remaining < 0) or (len(violations) > 0)
@@ -167,6 +183,7 @@ def run_simulation(
         "initial_remaining": initial_remaining,
         "final_remaining": final_remaining,
         "use_lock": use_lock,
+        "use_fine_grained": use_fine_grained,
         "delay": delay,
         "users": users,
         "thread_results": sorted_results,
@@ -176,6 +193,10 @@ def run_simulation(
         "overbooked": overbooked,
         "violations": violations,
         "total_runtime_ms": total_runtime_ms,
+        "throughput_rps": throughput_rps,
+        "avg_wait_ms": avg_wait_ms,
+        "max_wait_ms": max_wait_ms,
+        "avg_held_ms": avg_held_ms,
         "timeline_data": timeline_data,
         "registered_users": confirmed_users,
         "sim_start_time": sim_start_time,
@@ -190,16 +211,13 @@ def run_comparison(
     stagger_ms: float = 0.0,
     capacity_override: Optional[int] = None,
     remaining_override: Optional[int] = None,
+    use_fine_grained: bool = False,
 ) -> Dict[str, Any]:
     """
     Execute a side-by-side comparative simulation:
     Runs the IDENTICAL workload first in UNSAFE mode (Mutex OFF) and then
     in SAFE mode (Mutex ON), each on a clean cloned state.
-
-    Returns:
-    - Dictionary with 'unsafe' and 'safe' outcome objects and comparison metrics.
     """
-    # Create baseline store for the test
     base_store = EventStore()
     if capacity_override is not None:
         base_store.events[event_id]["capacity"] = capacity_override
@@ -217,6 +235,7 @@ def run_comparison(
         delay=delay,
         stagger_ms=stagger_ms,
         store=unsafe_store,
+        use_fine_grained=False,
     )
 
     # 2. Run Safe Simulation on another fresh copy
@@ -228,6 +247,7 @@ def run_comparison(
         delay=delay,
         stagger_ms=stagger_ms,
         store=safe_store,
+        use_fine_grained=use_fine_grained,
     )
 
     return {
@@ -240,4 +260,3 @@ def run_comparison(
         "race_demonstrated": unsafe_result["overbooked"],
         "safe_guaranteed": not safe_result["overbooked"] and len(safe_result["violations"]) == 0,
     }
-

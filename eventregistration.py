@@ -1,5 +1,23 @@
 """
-Event / Workshop Registration System  (Product 8)
+Event / Workshop Registration System (Original Baseline Prototype)
+==================================================================
+HISTORICAL CONTEXT & EDUCATIONAL BASELINE LINEAGE:
+This module represents the initial minimal CLI proof-of-concept for Product 8.
+It demonstrated the foundational race condition on in-memory dictionary data
+and simple global mutex synchronization (threading.Lock).
+
+EVOLUTION:
+This prototype has been expanded into the full enterprise architecture:
+- database.py: Normalized SQLite database with WAL mode and ACID transactions
+- registration_engine.py: Dual-mode engine with fine-grained per-event locking
+- ticket_service.py: Digital QR ticket generation and attendance verification
+- report_service.py: Anti-formula-injection CSV & printable PDF generation
+- waitlist_service.py: Counting Semaphore resource permit lab
+- app.py: Multi-role Streamlit dashboard with Gantt chart timeline
+- test_cases.py: 14 automated verification tests
+
+This file is preserved intact for academic historical contrast and baseline review.
+==================================================================
 Concept: critical section + mutex (threading.Lock)
 
 Shared data  : events[event_id]["seats"]  and  registrations[event_id]
@@ -83,7 +101,7 @@ def run_test(title, use_lock, users, event_id):
         t.join()
     confirmed = len(registrations[event_id])
     print(f"Confirmed: {confirmed} | Capacity: {events[event_id]['capacity']} "
-          f"| Seats left: {events[event_id]['seats']}")
+          f"| Seats left: {events[event_id]["seats"]}")
     seats = events[event_id]["seats"]
     cap = events[event_id]["capacity"]
     if confirmed > cap or seats < 0:
