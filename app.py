@@ -122,6 +122,16 @@ st.sidebar.markdown("### 🔒 EventFlow OS")
 st.sidebar.markdown("**OS Capstone Monitor**  \n*Process Sync & Mutex Locks*")
 st.sidebar.divider()
 
+page_param = st.query_params.get("page", "").lower()
+page_map = {
+    "dashboard": 0,
+    "events": 1,
+    "registrations": 2,
+    "lab": 3,
+    "about": 4,
+}
+default_nav_idx = page_map.get(page_param, 0)
+
 nav_selection = st.sidebar.radio(
     "Navigation Menu",
     [
@@ -131,7 +141,7 @@ nav_selection = st.sidebar.radio(
         "🔒 Mutex & Synchronization Lab",
         "ℹ️ About Project",
     ],
-    index=0,
+    index=default_nav_idx,
 )
 
 st.sidebar.divider()
@@ -299,7 +309,8 @@ elif nav_selection == "📝 My Registrations":
     </div>
     """, unsafe_allow_html=True)
 
-    lookup_email = st.text_input("Enter your registered student email address:", placeholder="e.g. alice@student.edu")
+    lookup_param = st.query_params.get("email", "")
+    lookup_email = st.text_input("Enter your registered student email address:", value=lookup_param, placeholder="e.g. alice@student.edu")
 
     if lookup_email.strip():
         user_regs = services.get_student_registrations(lookup_email.strip())
@@ -373,8 +384,9 @@ elif nav_selection == "🔒 Mutex & Synchronization Lab":
     with c_b1:
         run_comp = st.button("⚡ Run Side-by-Side Comparison", type="primary", use_container_width=True)
 
-    if run_comp or "last_comp" in st.session_state:
-        if run_comp:
+    auto_run = st.query_params.get("run", "0") == "1"
+    if run_comp or auto_run or "last_comp" in st.session_state:
+        if run_comp or (auto_run and "last_comp" not in st.session_state):
             st.session_state["last_comp"] = mutex_lab.run_side_by_side_comparison(
                 num_users=num_users,
                 capacity=capacity,
