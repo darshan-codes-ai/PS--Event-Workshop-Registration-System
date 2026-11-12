@@ -1,50 +1,147 @@
 """
-Database Layer - SQLite Persistence for Event Registration System
-Provides normalized schema, thread-safe connection management, foreign key enforcement,
-WAL mode, transactions, and idempotent initialization.
+database.py - Database Layer for EventFlow OS
+Simple, robust SQLite persistence with WAL mode and foreign key enforcement.
 """
-
-from __future__ import annotations
 
 import contextlib
 import os
 import sqlite3
 import threading
 from datetime import datetime
-from typing import Any, Dict, Generator, List, Optional, Tuple
+from typing import Any, Dict, Generator, List, Optional
 
 DATABASE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "events_system.db")
-
-# Thread-local storage for SQLite connections to ensure safe multi-threaded access
 _local = threading.local()
+
+# 10 Required Academic Workshops
+SAMPLE_EVENTS = [
+    {
+        "event_id": "EVT-01",
+        "title": "AI & Machine Learning Workshop",
+        "description": "Hands-on neural networks, deep learning models, and real-time computer vision deployment.",
+        "date": "2026-11-20 10:00 AM",
+        "venue": "Auditorium Hall A",
+        "capacity": 35,
+    },
+    {
+        "event_id": "EVT-02",
+        "title": "Python Programming Bootcamp",
+        "description": "Master clean code, OOP architecture, concurrency primitives, and asynchronous Python.",
+        "date": "2026-11-22 09:30 AM",
+        "venue": "Software Lab 3",
+        "capacity": 50,
+    },
+    {
+        "event_id": "EVT-03",
+        "title": "Cloud Computing with AWS",
+        "description": "Architecting resilient distributed systems using EC2, Lambda, S3, and VPC networking.",
+        "date": "2026-11-25 11:00 AM",
+        "venue": "Cloud Computing Center",
+        "capacity": 35,
+    },
+    {
+        "event_id": "EVT-04",
+        "title": "Cybersecurity Essentials",
+        "description": "Network penetration testing, cryptographic protocols, defense in depth, and threat modeling.",
+        "date": "2026-11-28 02:00 PM",
+        "venue": "Cyber Defense Lab",
+        "capacity": 40,
+    },
+    {
+        "event_id": "EVT-05",
+        "title": "Full-Stack Web Development Hackathon",
+        "description": "Build and ship complete production web applications with modern frontend and REST APIs.",
+        "date": "2026-12-01 09:00 AM",
+        "venue": "Innovation Hub Room 102",
+        "capacity": 40,
+    },
+    {
+        "event_id": "EVT-06",
+        "title": "Data Science & Analytics Workshop",
+        "description": "Exploratory data analysis, statistical inferencing, predictive modeling, and data pipelines.",
+        "date": "2026-12-04 10:30 AM",
+        "venue": "Data Systems Lab 2",
+        "capacity": 35,
+    },
+    {
+        "event_id": "EVT-07",
+        "title": "IoT & Smart Embedded Systems",
+        "description": "Interfacing microcontrollers, sensor telemetry streams, MQTT messaging, and Edge AI.",
+        "date": "2026-12-07 01:30 PM",
+        "venue": "Hardware & Embedded Lab",
+        "capacity": 30,
+    },
+    {
+        "event_id": "EVT-08",
+        "title": "Git & GitHub Masterclass",
+        "description": "Branching strategies, interactive rebasing, merge conflict resolution, and CI/CD workflows.",
+        "date": "2026-12-10 11:00 AM",
+        "venue": "Seminar Hall B",
+        "capacity": 45,
+    },
+    {
+        "event_id": "EVT-09",
+        "title": "Competitive Programming & DSA",
+        "description": "Advanced tree structures, dynamic programming paradigms, graph algorithms, and Big-O mastery.",
+        "date": "2026-12-14 10:00 AM",
+        "venue": "Algorithms Theater",
+        "capacity": 60,
+    },
+    {
+        "event_id": "EVT-10",
+        "title": "Tech Startup & Innovation Seminar",
+        "description": "From ideation to MVP: product-market fit, software unit economics, and pitching to investors.",
+        "date": "2026-12-18 03:00 PM",
+        "venue": "Main Campus Auditorium",
+        "capacity": 50,
+    },
+]
 
 
 def get_connection(db_path: str = DATABASE_FILE) -> sqlite3.Connection:
-    """
-    Get or create a thread-local SQLite connection with optimal concurrency settings.
-    - WAL mode enabled for concurrent reads and writes
-    - Foreign keys enforced
-    - 30-second busy timeout to handle lock contention gracefully
-    """
-    conn = getattr(_local, "connection", None)
+    """Get or create a thread-local SQLite connection with WAL mode and foreign keys enabled."""
+    abs_path = os.path.abspath(db_path)
+    connections = getattr(_local, "connections", None)
+    if connections is None:
+        connections = {}
+        _local.connections = connections
+
+    conn = connections.get(abs_path)
     if conn is None:
-        conn = sqlite3.connect(db_path, timeout=30.0, check_same_thread=False)
+        conn = sqlite3.connect(abs_path, timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        # Enable Write-Ahead Logging for high-concurrency read/write operations
         conn.execute("PRAGMA journal_mode = WAL;")
-        # Enforce foreign key constraints strictly
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA busy_timeout = 30000;")
-        _local.connection = conn
+        connections[abs_path] = conn
     return conn
+
+
+def close_connection(db_path: Optional[str] = None) -> None:
+    """Close thread-local connection for a specific path or all active connections."""
+    connections = getattr(_local, "connections", None)
+    if not connections:
+        return
+    if db_path is not None:
+        abs_path = os.path.abspath(db_path)
+        conn = connections.pop(abs_path, None)
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    else:
+        for conn in list(connections.values()):
+            try:
+                conn.close()
+            except Exception:
+                pass
+        connections.clear()
 
 
 @contextlib.contextmanager
 def get_db_cursor(db_path: str = DATABASE_FILE) -> Generator[sqlite3.Cursor, None, None]:
-    """
-    Context manager providing an atomic database cursor wrapped in a transaction.
-    Commits on successful completion; rolls back on unhandled exception.
-    """
+    """Transactional cursor context manager with automatic commit and rollback."""
     conn = get_connection(db_path)
     cursor = conn.cursor()
     try:
@@ -58,14 +155,12 @@ def get_db_cursor(db_path: str = DATABASE_FILE) -> Generator[sqlite3.Cursor, Non
 
 
 def init_db(db_path: str = DATABASE_FILE, reset: bool = False) -> None:
-    """
-    Initialize the SQLite database schema and seed essential demo records.
-    Idempotent: safe to run multiple times.
-    """
+    """Initialize essential SQLite tables and seed default events idempotently."""
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
     if reset:
+        cursor.execute("PRAGMA foreign_keys = OFF;")
         cursor.executescript("""
             DROP TABLE IF EXISTS attendance;
             DROP TABLE IF EXISTS audit_logs;
@@ -74,198 +169,184 @@ def init_db(db_path: str = DATABASE_FILE, reset: bool = False) -> None:
             DROP TABLE IF EXISTS events;
             DROP TABLE IF EXISTS users;
         """)
+        cursor.execute("PRAGMA foreign_keys = ON;")
 
-    # 1. Users Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            display_name TEXT NOT NULL,
-            email TEXT,
-            password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('Student', 'Organizer', 'Administrator')),
-            created_at TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active', 'Suspended'))
-        );
-    """)
-
-    # 2. Events Table
-    cursor.execute("""
+    cursor.executescript("""
         CREATE TABLE IF NOT EXISTS events (
-            id TEXT PRIMARY KEY,
+            event_id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             description TEXT,
-            category TEXT NOT NULL DEFAULT 'Technical',
+            date TEXT NOT NULL,
             venue TEXT NOT NULL,
-            start_datetime TEXT NOT NULL,
-            end_datetime TEXT NOT NULL,
-            capacity INTEGER NOT NULL CHECK(capacity >= 0),
-            status TEXT NOT NULL DEFAULT 'Published' CHECK(status IN ('Draft', 'Published', 'Closed', 'Completed', 'Cancelled')),
-            organizer_id TEXT NOT NULL REFERENCES users(id),
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            capacity INTEGER NOT NULL CHECK(capacity > 0)
         );
-    """)
 
-    # 3. Registrations Table
-    cursor.execute("""
         CREATE TABLE IF NOT EXISTS registrations (
-            id TEXT PRIMARY KEY,
-            event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            status TEXT NOT NULL CHECK(status IN ('CONFIRMED', 'CANCELLED', 'WAITLISTED', 'ATTENDED')),
-            ticket_id TEXT UNIQUE,
-            registered_at TEXT NOT NULL,
-            cancelled_at TEXT
+            registration_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
+            student_name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            registration_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'CONFIRMED' CHECK(status IN ('CONFIRMED', 'CANCELLED'))
         );
-    """)
 
-    # Partial unique index: A user can only have ONE active registration (CONFIRMED or WAITLISTED) per event
-    cursor.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_active_reg 
-        ON registrations(event_id, user_id) 
-        WHERE status IN ('CONFIRMED', 'WAITLISTED');
+        CREATE INDEX IF NOT EXISTS idx_reg_event ON registrations(event_id);
+        CREATE INDEX IF NOT EXISTS idx_reg_email ON registrations(email);
+        CREATE INDEX IF NOT EXISTS idx_reg_status ON registrations(status);
     """)
-
-    # 4. Waitlist Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS waitlist (
-            id TEXT PRIMARY KEY,
-            event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            queue_position INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING', 'PROMOTED', 'CANCELLED')),
-            joined_at TEXT NOT NULL
-        );
-    """)
-
-    cursor.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_active_waitlist 
-        ON waitlist(event_id, user_id) 
-        WHERE status = 'WAITING';
-    """)
-
-    # 5. Attendance Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS attendance (
-            id TEXT PRIMARY KEY,
-            registration_id TEXT NOT NULL UNIQUE REFERENCES registrations(id) ON DELETE CASCADE,
-            event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
-            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            checked_in_at TEXT NOT NULL,
-            checked_in_by TEXT NOT NULL REFERENCES users(id),
-            status TEXT NOT NULL DEFAULT 'PRESENT' CHECK(status IN ('PRESENT', 'EXCUSED'))
-        );
-    """)
-
-    # 6. Audit Logs Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            actor_id TEXT,
-            event_id TEXT,
-            action TEXT NOT NULL,
-            status TEXT NOT NULL,
-            details TEXT,
-            created_at TEXT NOT NULL
-        );
-    """)
-
     conn.commit()
-    seed_demo_data(db_path)
+
+    seed_events(db_path)
+    if os.path.abspath(db_path) == os.path.abspath(DATABASE_FILE):
+        seed_sample_registrations(db_path)
 
 
-def seed_demo_data(db_path: str = DATABASE_FILE) -> None:
-    """Seed initial demo accounts and workshops if the database is newly initialized."""
+def seed_events(db_path: str = DATABASE_FILE) -> None:
+    """Idempotently seed the 10 standard academic workshops."""
+    with get_db_cursor(db_path) as cursor:
+        for ev in SAMPLE_EVENTS:
+            cursor.execute("SELECT COUNT(*) AS cnt FROM events WHERE event_id = ?", (ev["event_id"],))
+            if cursor.fetchone()["cnt"] == 0:
+                cursor.execute("""
+                    INSERT INTO events (event_id, title, description, date, venue, capacity)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (ev["event_id"], ev["title"], ev["description"], ev["date"], ev["venue"], ev["capacity"]))
+
+
+def seed_sample_registrations(db_path: str = DATABASE_FILE) -> None:
+    """Seed a small realistic baseline of sample registrations."""
+    with get_db_cursor(db_path) as cursor:
+        cursor.execute("SELECT COUNT(*) AS cnt FROM registrations")
+        if cursor.fetchone()["cnt"] > 0:
+            return
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        samples = [
+            ("REG-1001", "EVT-01", "Alice Johnson", "alice@student.edu", now, "CONFIRMED"),
+            ("REG-1002", "EVT-01", "Bob Smith", "bob@student.edu", now, "CONFIRMED"),
+            ("REG-1003", "EVT-02", "Alice Johnson", "alice@student.edu", now, "CONFIRMED"),
+            ("REG-1004", "EVT-03", "Carol White", "carol@student.edu", now, "CONFIRMED"),
+        ]
+        cursor.executemany("""
+            INSERT INTO registrations (registration_id, event_id, student_name, email, registration_date, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, samples)
+
+
+def get_all_events(db_path: str = DATABASE_FILE) -> List[Dict[str, Any]]:
+    """Retrieve all events along with active confirmed registration counts and available seats."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            e.event_id,
+            e.title,
+            e.description,
+            e.date,
+            e.venue,
+            e.capacity,
+            COUNT(CASE WHEN r.status = 'CONFIRMED' THEN 1 END) AS confirmed_count,
+            (e.capacity - COUNT(CASE WHEN r.status = 'CONFIRMED' THEN 1 END)) AS available_seats
+        FROM events e
+        LEFT JOIN registrations r ON e.event_id = r.event_id
+        GROUP BY e.event_id
+        ORDER BY e.event_id ASC
+    """)
+    rows = cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_event_by_id(event_id: str, db_path: str = DATABASE_FILE) -> Optional[Dict[str, Any]]:
+    """Retrieve a single event by ID with available seats calculation."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            e.event_id,
+            e.title,
+            e.description,
+            e.date,
+            e.venue,
+            e.capacity,
+            COUNT(CASE WHEN r.status = 'CONFIRMED' THEN 1 END) AS confirmed_count,
+            (e.capacity - COUNT(CASE WHEN r.status = 'CONFIRMED' THEN 1 END)) AS available_seats
+        FROM events e
+        LEFT JOIN registrations r ON e.event_id = r.event_id
+        WHERE e.event_id = ?
+        GROUP BY e.event_id
+    """, (event_id,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def get_registrations_by_email(email: str, db_path: str = DATABASE_FILE) -> List[Dict[str, Any]]:
+    """Retrieve active registrations for a given student email."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            r.registration_id,
+            r.event_id,
+            e.title AS event_title,
+            e.date AS event_date,
+            e.venue AS event_venue,
+            r.student_name,
+            r.email,
+            r.registration_date,
+            r.status
+        FROM registrations r
+        JOIN events e ON r.event_id = e.event_id
+        WHERE LOWER(TRIM(r.email)) = LOWER(TRIM(?)) AND r.status = 'CONFIRMED'
+        ORDER BY r.registration_date DESC
+    """, (email,))
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_all_registrations(db_path: str = DATABASE_FILE) -> List[Dict[str, Any]]:
+    """Retrieve all registrations for display or audit."""
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 
+            r.registration_id,
+            r.event_id,
+            e.title AS event_title,
+            r.student_name,
+            r.email,
+            r.registration_date,
+            r.status
+        FROM registrations r
+        JOIN events e ON r.event_id = e.event_id
+        ORDER BY r.registration_date DESC
+    """)
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def get_kpis(db_path: str = DATABASE_FILE) -> Dict[str, int]:
+    """Calculate the 4 core dashboard KPI numbers."""
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
-    # Check if admin already exists
-    cursor.execute("SELECT COUNT(*) AS cnt FROM users WHERE id = 'admin_sys'")
-    if cursor.fetchone()["cnt"] > 0:
-        return  # Data already seeded
+    cursor.execute("SELECT COUNT(*) AS total_events, COALESCE(SUM(capacity), 0) AS total_capacity FROM events")
+    row_ev = cursor.fetchone()
+    total_events = row_ev["total_events"] if row_ev else 0
+    total_capacity = row_ev["total_capacity"] if row_ev else 0
 
-    now = datetime.now().isoformat()
+    cursor.execute("SELECT COUNT(*) AS total_confirmed FROM registrations WHERE status = 'CONFIRMED'")
+    row_reg = cursor.fetchone()
+    total_confirmed = row_reg["total_confirmed"] if row_reg else 0
 
-    # Import hash_password from auth for genuine PBKDF2 hashes
-    import auth
-    demo_password_hash = auth.hash_password("Password123!", iterations=100000)
+    available_seats = max(0, total_capacity - total_confirmed)
 
-    demo_users = [
-        ("admin_sys", "System Administrator", "admin@university.edu", demo_password_hash, "Administrator", now),
-        ("prof_turner", "Prof. Alan Turner", "turner@cs.university.edu", demo_password_hash, "Organizer", now),
-        ("student_alice", "Alice Johnson", "alice@student.edu", demo_password_hash, "Student", now),
-        ("student_bob", "Bob Smith", "bob@student.edu", demo_password_hash, "Student", now),
-        ("student_carol", "Carol Williams", "carol@student.edu", demo_password_hash, "Student", now),
-        ("S1", "Student S1", "s1@student.edu", demo_password_hash, "Student", now),
-        ("S2", "Student S2", "s2@student.edu", demo_password_hash, "Student", now),
-        ("S3", "Student S3", "s3@student.edu", demo_password_hash, "Student", now),
-    ]
-
-    cursor.executemany("""
-        INSERT OR IGNORE INTO users (id, display_name, email, password_hash, role, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, demo_users)
-
-    demo_events = [
-        (
-            "E1",
-            "Python Concurrency Workshop",
-            "Deep dive into multi-threading, mutual exclusion (threading.Lock), and OS race conditions.",
-            "Systems & OS",
-            "Turing Lab 301",
-            "2026-11-15 10:00:00",
-            "2026-11-15 13:00:00",
-            2,
-            "Published",
-            "prof_turner",
-            now,
-            now,
-        ),
-        (
-            "E2",
-            "Distributed Systems Seminar",
-            "Exploration of consensus protocols, Paxos, Raft, and distributed mutual exclusion.",
-            "Distributed Systems",
-            "Lovelace Auditorium",
-            "2026-11-22 14:00:00",
-            "2026-11-22 17:00:00",
-            5,
-            "Published",
-            "prof_turner",
-            now,
-            now,
-        ),
-        (
-            "E3",
-            "Operating Systems Masterclass",
-            "Deadlock prevention, Coffman conditions, paging architectures, and kernel CPU scheduling.",
-            "Core Systems",
-            "Von Neumann Hall",
-            "2026-12-05 09:30:00",
-            "2026-12-05 12:30:00",
-            10,
-            "Published",
-            "prof_turner",
-            now,
-            now,
-        ),
-    ]
-
-    cursor.executemany("""
-        INSERT OR IGNORE INTO events 
-        (id, title, description, category, venue, start_datetime, end_datetime, capacity, status, organizer_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, demo_events)
-
-    conn.commit()
-
-    # Automatically seed the 20 sample events into fresh installations
-    try:
-        import seed_events
-        seed_events.seed_events(db_path)
-    except Exception:
-        pass
+    return {
+        "total_events": total_events,
+        "total_registrations": total_confirmed,
+        "available_seats": available_seats,
+        "total_capacity": total_capacity,
+    }
 
 
-# Auto-initialize database on module import
-init_db()
+if __name__ == "__main__":
+    init_db(reset=True)
+    print("Database initialized successfully.")
+    print("KPIs:", get_kpis())
